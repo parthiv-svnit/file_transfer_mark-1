@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuickDrop - Sharing Active</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .dark { background-color: #111827; color: #e5e7eb; }
+        .card { background-color: #1f2937; border: 1px solid #374151; }
+        #qr-code { border: 8px solid white; border-radius: 12px; }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+    <div id="main-view" class="max-w-lg w-full text-center space-y-6 hidden">
+        <div>
+            <i class="fas fa-bolt-lightning text-5xl text-indigo-400"></i>
+            <h1 class="mt-4 text-4xl font-extrabold tracking-tight">QuickDrop</h1>
+        </div>
+        <div class="card p-8 rounded-lg">
+            <h2 class="text-2xl font-bold text-green-400">Sharing is Active!</h2>
+            <p class="mt-2 text-gray-400">Scan the QR code with another device on the same Wi-Fi.</p>
+            <div class="mt-4 p-3 bg-gray-800 rounded-md text-sm truncate">
+                <strong class="text-indigo-400">Sharing Folder:</strong> <span id="folder-name"></span>
+            </div>
+            <div class="flex justify-center my-6">
+                <canvas id="qr-code"></canvas>
+            </div>
+            <p>Or manually enter this address:</p>
+            <p id="local-address" class="text-xl font-semibold text-indigo-400 cursor-pointer" title="Click to copy"></p>
+        </div>
+    </div>
+    
+    <div id="loading-view" class="text-center">
+        <h2 class="text-2xl font-semibold text-gray-400">Connecting to server...</h2>
+    </div>
+
+    <script>
+        const loadingView = document.getElementById('loading-view');
+        const mainView = document.getElementById('main-view');
+        const folderNameEl = document.getElementById('folder-name');
+        const localAddressEl = document.getElementById('local-address');
+        const qrCanvas = document.getElementById('qr-code');
+
+        async function getShareStatus() {
+            try {
+                const response = await fetch('/status');
+                if (!response.ok) throw new Error('Server not responding');
+                const data = await response.json();
+
+                if (data.sharing) {
+                    const shareUrl = `http://${data.ip}:${data.port}/shared/`;
+                    folderNameEl.textContent = data.folder;
+                    localAddressEl.textContent = shareUrl;
+                    new QRious({ element: qrCanvas, value: shareUrl, size: 200, background: 'white', foreground: 'black' });
+                    
+                    loadingView.classList.add('hidden');
+                    mainView.classList.remove('hidden');
+                } else {
+                    loadingView.innerHTML = `<h2 class="text-2xl font-semibold text-red-400">Error: No folder is being shared.</h2><p class="text-gray-400 mt-2">Please restart the application by running 'python app.py' in your terminal.</p>`;
+                }
+            } catch (error) {
+                console.error('Error fetching status:', error);
+                loadingView.innerHTML = `<h2 class="text-2xl font-semibold text-red-400">Could not connect to the QuickDrop app.</h2><p class="text-gray-400 mt-2">Please ensure the terminal window is still open and running without errors.</p>`;
+            }
+        }
+
+        localAddressEl.addEventListener('click', () => {
+            navigator.clipboard.writeText(localAddressEl.textContent).then(() => { alert('Address copied!'); });
+        });
+
+        // Get status as soon as the page loads.
+        window.addEventListener('load', getShareStatus);
+    </script>
+</body>
+</html>
+
