@@ -1,129 +1,179 @@
-import socket
-import sys
-import webbrowser
+# ==============================================================================
+# QuickDrop Application (v12 - Professional)
+#
+# A simple, local file sharing application.
+# This script first opens a native GUI window to select a folder,
+# then launches a Flask web server to share the contents of that folder.
+# ==============================================================================
+
+# --- Standard Library Imports ---
 import os
-import html
-import threading
-import posixpath # Use this for URL path manipulation
+import socket
+import webbrowser
+from threading import Timer
+import tkinter as tk
+from tkinter import filedialog
 
-# --- Part 1: Dependency Check ---
+# --- Third-Party Library Imports ---
+# This section checks if Flask is installed and provides a helpful error message.
 try:
-    from flask import Flask, jsonify, send_from_directory, abort, render_template_string
-    import tkinter as tk
-    from tkinter import filedialog
+    from flask import Flask, send_from_directory, jsonify, abort
 except ImportError:
-    print("="*60)
-    print("FATAL ERROR: A required library is not installed.")
-    print("Please open your terminal (Command Prompt/PowerShell) and run this command:")
-    print("pip install Flask")
-    print("="*60)
-    sys.exit(1)
+    print("\n--- ERROR: Flask is not installed ---")
+    print("QuickDrop requires the Flask library to run.")
+    print("Please install it by running this command in your terminal:")
+    print("\tpip install Flask\n")
+    exit()
 
-# --- Part 2: Global State and Configuration ---
-SHARED_FOLDER_PATH = None
-APP_PORT = 5000
+# ==============================================================================
+# Configuration & Global Variables
+# ==============================================================================
+
+# These variables will be set after the user selects a folder.
+# Using global variables is acceptable here because the application's state
+# is simple and set only once at startup.
+SHARED_DIRECTORY = ""
+ROOT_FOLDER_NAME = ""
+PORT = 5000
 
 app = Flask(__name__)
 
-# --- Part 3: The Core Application Logic ---
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
 
-def get_local_ip():
-    """Finds the computer's local IP address."""
+def get_local_ip() -> str:
+    """
+    Finds the local IP address of the machine to display to the user.
+    Returns the IP address as a string.
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        # This is a dummy connection and doesn't have to be reachable.
         s.connect(('10.255.255.255', 1))
-        IP = s.getsockname()[0]
+        ip_address = s.getsockname()[0]
     except Exception:
-        IP = '127.0.0.1'
+        ip_address = '127.0.0.1'  # Fallback to localhost
     finally:
         s.close()
-    return IP
+    return ip_address
+
+def open_browser_after_delay():
+    """Opens the web browser to the connection page after a short delay."""
+    def _open():
+        webbrowser.open_new(f'http://127.0.0.1:{PORT}')
+    # Use a timer to ensure the server has time to start before the browser opens.
+    Timer(1, _open).start()
+
+# ==============================================================================
+# API Endpoints (for the frontend to fetch data)
+# ==============================================================================
+
+@app.route('/api/info')
+def get_info():
+    """Provides the root folder name to the frontend."""
+    return jsonify({'root_folder_name': ROOT_FOLDER_NAME})
+
+@app.route('/api/files/')
+@app.route('/api/files/<path:subpath>')
+def list_files(subpath: str = ''):
+    """
+    Lists files and directories for the frontend file browser.
+    Returns a JSON list of items in the requested directory.
+    """
+    directory = os.path.join(SHARED_DIRECTORY, subpath)
+    if not os.path.exists(directory) or not os.path.isdir(directory):
+        return abort(404, "Directory not found")
+
+    items = []
+    for item_name in os.listdir(directory):
+        item_path = os.path.join(directory, item_name)
+        is_dir = os.path.isdir(item_path)
+        try:
+            items.append({
+                'name': item_name,
+                'path': os.path.join(subpath, item_name).replace("\\", "/"),
+                'is_dir': is_dir,
+                'size': os.path.getsize(item_path) if not is_dir else 0,
+                'last_modified': os.path.getmtime(item_path)
+            })
+        except OSError:
+            # Skip files that might be temporarily inaccessible (e.g., system files)
+            continue
+    return jsonify(items)
+
+@app.route('/download/<path:filepath>')
+def download_file(filepath: str):
+    """Serves a single file for download."""
+    abs_path = os.path.join(SHARED_DIRECTORY, filepath)
+    if not os.path.exists(abs_path) or os.path.isdir(abs_path):
+        return abort(404, "File not found")
+    
+    dir_path, filename = os.path.split(abs_path)
+    return send_from_directory(dir_path, filename, as_attachment=True)
+    
+# ==============================================================================
+# Web Page Routes (what the user sees)
+# ==============================================================================
 
 @app.route('/')
-def index():
-    """Serves the main user interface."""
+def connection_page():
+    """Serves the main connection page with IP address and QR code."""
+    ip_address = get_local_ip()
+    # The HTML is embedded here for simplicity, making the app a single file.
+    return f"""
+    <!DOCTYPE html><html lang="en" class="dark"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect to QuickDrop</title><script src="https://cdn.tailwindcss.com"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><style>body {{ font-family: 'Inter', sans-serif; background-color: #111827; }}</style></head>
+    <body class="flex items-center justify-center min-h-screen text-white"><div class="max-w-md w-full bg-gray-800 rounded-2xl shadow-2xl p-8 text-center">
+    <div class="flex justify-center items-center gap-3 mb-4"><i class="fas fa-bolt-lightning text-4xl text-indigo-400"></i><h1 class="text-4xl font-bold">QuickDrop</h1></div>
+    <p class="text-gray-400 mb-6">Scan the QR code or enter the address in your phone's browser.</p><div id="qrcode" class="flex justify-center p-4 bg-white rounded-lg mb-6"></div>
+    <div class="bg-gray-900 rounded-lg p-4"><p class="text-lg font-mono break-all">http://{ip_address}:{PORT}/files</p></div></div><script>new QRCode(document.getElementById("qrcode"), {{ text: "http://{ip_address}:{PORT}/files", width: 256, height: 256, colorDark : "#000000", colorLight : "#ffffff", correctLevel : QRCode.CorrectLevel.H }});</script></body></html>
+    """
+
+@app.route('/files')
+def files_page():
+    """Serves the main file browser interface (index.html)."""
+    # This assumes index.html is in the same directory as this script.
     return send_from_directory('.', 'index.html')
 
-@app.route('/status')
-def status():
-    """Provides the status of the current share."""
-    if SHARED_FOLDER_PATH:
-        return jsonify(
-            sharing=True, 
-            folder=os.path.basename(SHARED_FOLDER_PATH), 
-            ip=get_local_ip(), 
-            port=APP_PORT
-        )
-    return jsonify(sharing=False, error="No folder has been selected.")
+# ==============================================================================
+# Main Application Logic
+# ==============================================================================
 
-@app.route('/shared/', defaults={'subpath': ''})
-@app.route('/shared/<path:subpath>')
-def serve_shared_content(subpath):
-    """Serves the shared folder's contents (files and directory listings)."""
-    if not SHARED_FOLDER_PATH:
-        return abort(404, "Sharing is not active.")
-
-    # Convert URL path to a safe OS-specific path
-    # e.g., 'folder/file.txt' becomes 'folder\file.txt' on Windows
-    local_path = os.path.join(SHARED_FOLDER_PATH, *subpath.split('/'))
+def select_folder_and_start_server():
+    """
+    Uses Tkinter to open a native folder selection dialog, then starts the server.
+    This is the main entry point of the application.
+    """
+    global SHARED_DIRECTORY, ROOT_FOLDER_NAME
     
-    # Security Check: Prevent access outside the shared folder
-    if not os.path.abspath(local_path).startswith(os.path.abspath(SHARED_FOLDER_PATH)):
-        return abort(403, "Forbidden")
-
-    if not os.path.exists(local_path):
-        return abort(404)
-
-    if os.path.isdir(local_path):
-        # Generate an HTML page for directory listing
-        items = os.listdir(local_path)
-        dirs = sorted([d for d in items if os.path.isdir(os.path.join(local_path, d))], key=str.lower)
-        files = sorted([f for f in items if not os.path.isdir(os.path.join(local_path, f))], key=str.lower)
-        
-        # CORRECTED: Use posixpath for URL-safe path manipulation
-        parent_path = posixpath.dirname(subpath)
-        parent_link = f'<li><a href="/shared/{parent_path}">⬆️ Parent Directory</a></li>' if subpath else ''
-        links = parent_link
-        for d in dirs: links += f'<li class="dir"><a href="/shared/{posixpath.join(subpath, d)}">{html.escape(d)}/</a></li>'
-        for f in files: links += f'<li class="file"><a href="/shared/{posixpath.join(subpath, f)}">{html.escape(f)}</a></li>'
-        
-        return render_template_string(f"""
-            <!DOCTYPE html><html lang="en"><head><title>Files</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:2em;background:#f8f9fa;}}a{{color:#007bff;text-decoration:none;}}ul{{list-style:none;padding:0}}li{{display:flex;align-items:center;padding:.5em;border-radius:8px;}}li:hover{{background-color:#e9ecef;}}li a{{font-size:1.1em;}}li::before{{font-size:1.5em;margin-right:.75em;}}li.dir::before{{content:'📁';}}li.file::before{{content:'📄';}}</style>
-            </head><body><ul>{links}</ul></body></html>
-        """)
-    else:
-        # Serve the requested file for download
-        return send_from_directory(os.path.dirname(local_path), os.path.basename(local_path))
-
-# --- Part 4: Main Execution ---
-if __name__ == '__main__':
-    if not os.path.exists('index.html'):
-        print("[ERROR] 'index.html' not found. It must be in the same folder as 'app.py'.")
-        sys.exit(1)
-
-    # STEP 1: Ask the user to select a folder immediately
-    print("[*] Please select the folder you want to share...")
     root = tk.Tk()
-    root.withdraw() # Hide the empty tkinter window
-    SHARED_FOLDER_PATH = filedialog.askdirectory(title="Select a Folder to Share with QuickDrop")
-    root.destroy()
+    root.withdraw()  # Hide the main tkinter window
     
-    if not SHARED_FOLDER_PATH:
-        print("[!] No folder selected. Exiting application.")
-        sys.exit(0)
+    print("--------------------------------------------------")
+    print("A folder selection dialog has opened.")
+    print("Please choose a folder to share with QuickDrop.")
+    print("--------------------------------------------------")
+    
+    selected_path = filedialog.askdirectory(title="Select a Folder to Share")
+    
+    if selected_path:
+        # Set the global variables with the chosen path
+        SHARED_DIRECTORY = os.path.abspath(selected_path)
+        ROOT_FOLDER_NAME = os.path.basename(SHARED_DIRECTORY)
+        
+        print(f"\n[INFO] Sharing folder: {SHARED_DIRECTORY}")
+        print(f"[INFO] Access QuickDrop on other devices at: http://{get_local_ip()}:{PORT}/files\n")
+        
+        open_browser_after_delay()
+        
+        # Start the Flask web server
+        # debug=False is important for performance and security in a shared script.
+        app.run(host='0.0.0.0', port=PORT, debug=False)
+    else:
+        print("\n[INFO] No folder selected. QuickDrop will now exit.")
 
-    # STEP 2: Only start the web server AFTER a folder has been chosen
-    url = f"http://127.0.0.1:{APP_PORT}"
-    print("="*60)
-    print("🚀 QuickDrop Server is RUNNING")
-    print(f"   Sharing Folder -> {SHARED_FOLDER_PATH}")
-    print(f"   Your control panel is opening at: {url}")
-    print("   (This terminal window must stay open)")
-    print("="*60)
-    
-    threading.Timer(1, lambda: webbrowser.open(url)).start()
-    
-    app.run(host='0.0.0.0', port=APP_PORT)
+if __name__ == '__main__':
+    select_folder_and_start_server()
 
