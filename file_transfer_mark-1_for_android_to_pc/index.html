@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuickDrop - File Browser</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #111827; color: #e5e7eb; -webkit-tap-highlight-color: transparent; }
+        #download-selected-btn, #sort-control { transition: all 0.2s; }
+        #loading-overlay { background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); }
+        #breadcrumbs { display: flex; flex-wrap: nowrap; overflow: hidden; }
+        .sort-control-btn { user-select: none; }
+    </style>
+</head>
+<body class="p-2 sm:p-4 md:p-8">
+    <div class="max-w-7xl mx-auto">
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+            <div class="flex items-center gap-3 self-start md:self-center">
+                <i class="fas fa-bolt-lightning text-3xl text-indigo-400"></i>
+                <h1 class="text-2xl sm:text-3xl font-bold">QuickDrop</h1>
+            </div>
+            <div class="w-full md:w-1/3">
+                <div class="relative">
+                    <span class="absolute inset-y-0 left-0 flex items-center pl-3"><i class="fas fa-search text-gray-400"></i></span>
+                    <input type="search" id="search-box" placeholder="Search files..." class="w-full pl-10 pr-4 py-2 rounded-lg bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+            </div>
+        </header>
+
+        <!-- Breadcrumbs and Download Button -->
+        <div class="flex justify-between items-center mb-4 gap-2">
+            <nav id="breadcrumbs" class="text-gray-400 text-sm truncate"></nav>
+            <button id="download-selected-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3 sm:px-4 rounded-lg flex items-center gap-2 disabled:bg-gray-500 disabled:cursor-not-allowed flex-shrink-0" disabled>
+                <i class="fas fa-download"></i>
+                <span id="download-btn-text" class="hidden sm:inline">Download</span>
+                <span id="download-btn-count" class="hidden sm:inline"></span>
+            </button>
+        </div>
+
+        <!-- File Browser Table -->
+        <div class="bg-gray-800 rounded-lg shadow-lg overflow-x-auto">
+            <table class="w-full text-left">
+                <thead class="bg-gray-900 text-gray-300 uppercase text-xs sm:text-sm">
+                    <tr>
+                        <th class="p-3 sm:p-4 w-8"><input type="checkbox" id="select-all-checkbox" class="h-4 w-4 rounded bg-gray-700 border-gray-600"></th>
+                        <th class="p-3 sm:p-4">
+                            <!-- New Sort Control -->
+                            <div class="relative flex items-center gap-2">
+                                <div id="sort-control" class="flex items-center gap-2 cursor-pointer sort-control-btn hover:text-white">
+                                    <span id="sort-key-display">Name</span>
+                                    <i class="fas fa-caret-down"></i>
+                                </div>
+                                <button id="sort-order-btn" class="sort-control-btn hover:text-white p-1 rounded-md"><i id="sort-order-icon" class="fas fa-arrow-down"></i></button>
+                                
+                                <div id="sort-dropdown" class="absolute top-full left-0 mt-2 w-32 bg-gray-700 border border-gray-600 rounded-md shadow-lg hidden z-10">
+                                    <a href="#" class="block px-4 py-2 text-sm hover:bg-gray-600" data-sort="name">Name</a>
+                                    <a href="#" class="block px-4 py-2 text-sm hover:bg-gray-600" data-sort="last_modified">Date</a>
+                                    <a href="#" class="block px-4 py-2 text-sm hover:bg-gray-600" data-sort="size">Size</a>
+                                </div>
+                            </div>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody id="file-list" class="divide-y divide-gray-700">
+                    <!-- File items will be injected here -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div id="loading-overlay" class="fixed inset-0 flex-col items-center justify-center hidden z-50">
+            <i class="fas fa-spinner fa-spin text-5xl text-white"></i>
+            <p id="loading-text" class="text-white text-xl mt-4">Loading...</p>
+        </div>
+    </div>
+
+<script>
+    const state = {
+        currentPath: '',
+        files: [],
+        sortKey: 'name',
+        sortOrder: 'asc',
+        rootFolderName: 'Home'
+    };
+
+    // DOM Elements
+    const searchBox = document.getElementById('search-box');
+    const fileListBody = document.getElementById('file-list');
+    const breadcrumbs = document.getElementById('breadcrumbs');
+    const selectAllCheckbox = document.getElementById('select-all-checkbox');
+    const downloadBtn = document.getElementById('download-selected-btn');
+    const downloadBtnText = document.getElementById('download-btn-text');
+    const downloadBtnCount = document.getElementById('download-btn-count');
+    const loadingOverlay = document.getElementById('loading-overlay');
+    const loadingText = document.getElementById('loading-text');
+    
+    // Sort Control Elements
+    const sortControl = document.getElementById('sort-control');
+    const sortKeyDisplay = document.getElementById('sort-key-display');
+    const sortOrderBtn = document.getElementById('sort-order-btn');
+    const sortOrderIcon = document.getElementById('sort-order-icon');
+    const sortDropdown = document.getElementById('sort-dropdown');
+
+    function showLoading(text) {
+        loadingText.textContent = text;
+        loadingOverlay.classList.remove('hidden');
+        loadingOverlay.classList.add('flex');
+    }
+    
+    function hideLoading() {
+        loadingOverlay.classList.add('hidden');
+        loadingOverlay.classList.remove('flex');
+    }
+
+    function formatBytes(bytes, decimals = 2) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const dm = decimals < 0 ? 0 : decimals;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    }
+
+    function formatDate(timestamp) {
+        return new Date(timestamp * 1000).toLocaleString(undefined, {
+            year: 'numeric', month: 'short', day: 'numeric',
+            hour: 'numeric', minute: '2-digit'
+        });
+    }
+
+    function renderBreadcrumbs() {
+        const parts = state.currentPath.split('/').filter(Boolean);
+        let pathSegments = [];
+        let currentPath = '';
+
+        const homeLink = `<a href="#" data-path="" class="hover:text-white font-medium flex-shrink-0">${state.rootFolderName}</a>`;
+        pathSegments.push(homeLink);
+
+        for (const part of parts) {
+            currentPath += (currentPath ? '/' : '') + part;
+            const separator = `<span class="mx-1 sm:mx-2 text-gray-500 flex-shrink-0">/</span>`;
+            const link = `<a href="#" data-path="${currentPath}" class="hover:text-white font-medium whitespace-nowrap">${part}</a>`;
+            pathSegments.push(separator);
+            pathSegments.push(link);
+        }
+        breadcrumbs.innerHTML = pathSegments.join('');
+
+        setTimeout(() => {
+            if (breadcrumbs.scrollWidth > breadcrumbs.clientWidth && pathSegments.length > 3) {
+                const ellipsis = `<span class="mx-1 sm:mx-2 text-gray-500 flex-shrink-0">...</span>`;
+                while (breadcrumbs.scrollWidth > breadcrumbs.clientWidth && pathSegments.length > 5) {
+                    pathSegments.splice(1, 2); 
+                }
+                if (pathSegments.length > 3) {
+                    pathSegments.splice(1, 0, ellipsis);
+                }
+                breadcrumbs.innerHTML = pathSegments.join('');
+            }
+        }, 0);
+    }
+
+
+    function renderFileList() {
+        let filteredFiles = [...state.files];
+        const searchTerm = searchBox.value.toLowerCase();
+        if (searchTerm) {
+            filteredFiles = filteredFiles.filter(f => f.name.toLowerCase().includes(searchTerm));
+        }
+
+        const folders = filteredFiles.filter(f => f.is_dir);
+        const files = filteredFiles.filter(f => !f.is_dir);
+
+        // --- NEW & ROBUST SORTER LOGIC ---
+        const sorter = (a, b) => {
+            const valA = a[state.sortKey];
+            const valB = b[state.sortKey];
+            
+            let comparison = 0;
+            if (typeof valA === 'string') {
+                comparison = valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
+            } else {
+                comparison = valA - valB;
+            }
+
+            // Tie-breaker: if primary keys are equal, always sort by name
+            if (comparison === 0) {
+                comparison = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+            }
+            
+            // Apply sort order (descending flips the comparison result)
+            return state.sortOrder === 'asc' ? comparison : -comparison;
+        };
+
+        folders.sort(sorter);
+        files.sort(sorter);
+
+        // No need to reverse arrays anymore, the sorter handles it.
+        const sortedList = [...folders, ...files];
+
+        let html = '';
+        if (state.currentPath) {
+            const parentPath = state.currentPath.substring(0, state.currentPath.lastIndexOf('/'));
+            html += `
+                <tr class="hover:bg-gray-700 cursor-pointer" onclick="navigateTo('${parentPath}')">
+                    <td class="p-3 sm:p-4"></td>
+                    <td class="p-3 sm:p-4 text-indigo-400">
+                        <div class="flex items-center gap-3">
+                            <i class="fas fa-level-up-alt"></i>
+                            <span>Parent Directory</span>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }
+
+        if (sortedList.length === 0) {
+            html += `<tr><td colspan="2" class="text-center p-8 text-gray-500">No files found.</td></tr>`;
+        }
+
+        sortedList.forEach(file => {
+            const icon = file.is_dir ? 'fa-folder' : 'fa-file-lines';
+            const metadata = file.is_dir 
+                ? formatDate(file.last_modified) 
+                : `${formatBytes(file.size)} &middot; ${formatDate(file.last_modified)}`;
+
+            html += `
+                <tr class="hover:bg-gray-700">
+                    <td class="p-3 sm:p-4 w-8"><input type="checkbox" class="file-checkbox h-4 w-4 rounded bg-gray-700 border-gray-600" data-path="${file.path}" data-is-dir="${file.is_dir}"></td>
+                    <td class="p-3 sm:p-4">
+                        <a href="#" data-path="${file.path}" data-is-dir="${file.is_dir}" class="flex items-center gap-3">
+                            <i class="fas ${icon} text-indigo-400 text-xl"></i>
+                            <div class="flex flex-col">
+                                <span class="truncate font-medium">${file.name}</span>
+                                <span class="text-xs text-gray-400">${metadata}</span>
+                            </div>
+                        </a>
+                    </td>
+                </tr>
+            `;
+        });
+        fileListBody.innerHTML = html;
+        updateDownloadButton();
+    }
+
+    async function navigateTo(path) {
+        showLoading('Loading files...');
+        try {
+            const response = await fetch(`/api/files/${path}`);
+            if (!response.ok) throw new Error('Failed to load files');
+            state.currentPath = path;
+            state.files = await response.json();
+            renderBreadcrumbs();
+            renderFileList();
+            selectAllCheckbox.checked = false;
+        } catch (error) {
+            console.error(error);
+            alert('Error loading files. Please check the terminal for errors.');
+        } finally {
+            hideLoading();
+        }
+    }
+    
+    function updateDownloadButton() {
+        const selected = document.querySelectorAll('.file-checkbox:checked');
+        const count = selected.length;
+        if (count > 0) {
+            downloadBtn.disabled = false;
+            downloadBtnText.textContent = 'Download';
+            downloadBtnCount.textContent = `(${count})`;
+        } else {
+            downloadBtn.disabled = true;
+            downloadBtnText.textContent = 'Download';
+            downloadBtnCount.textContent = '';
+        }
+    }
+
+    function updateSortUI() {
+        const keyMap = { name: 'Name', last_modified: 'Date', size: 'Size' };
+        sortKeyDisplay.textContent = keyMap[state.sortKey];
+        // User Request: Down arrow for ASC, Up arrow for DESC
+        sortOrderIcon.className = `fas fa-arrow-${state.sortOrder === 'asc' ? 'down' : 'up'}`;
+    }
+
+    // --- Event Listeners ---
+    searchBox.addEventListener('input', renderFileList);
+    
+    sortControl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        sortDropdown.classList.toggle('hidden');
+    });
+
+    sortOrderBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.sortOrder = state.sortOrder === 'asc' ? 'desc' : 'asc';
+        sortDropdown.classList.add('hidden');
+        updateSortUI();
+        renderFileList();
+    });
+
+    sortDropdown.addEventListener('click', (e) => {
+        e.preventDefault();
+        const target = e.target.closest('a');
+        if (target && target.dataset.sort) {
+            state.sortKey = target.dataset.sort;
+            sortDropdown.classList.add('hidden');
+            updateSortUI();
+            renderFileList();
+        }
+    });
+    
+    document.addEventListener('click', () => {
+        sortDropdown.classList.add('hidden');
+    });
+
+    breadcrumbs.addEventListener('click', e => {
+        if (e.target.tagName === 'A') {
+            e.preventDefault();
+            navigateTo(e.target.dataset.path);
+        }
+    });
+
+    fileListBody.addEventListener('click', e => {
+        const link = e.target.closest('a');
+        if (link) {
+            e.preventDefault();
+            if (link.dataset.isDir === 'true') {
+                navigateTo(link.dataset.path);
+            } else {
+                window.open(`/download/${link.dataset.path}`, '_blank');
+            }
+        }
+    });
+    
+    selectAllCheckbox.addEventListener('change', () => {
+        document.querySelectorAll('.file-checkbox').forEach(cb => {
+            cb.checked = selectAllCheckbox.checked;
+        });
+        updateDownloadButton();
+    });
+
+    fileListBody.addEventListener('change', e => {
+        if (e.target.classList.contains('file-checkbox')) {
+            updateDownloadButton();
+        }
+    });
+    
+    downloadBtn.addEventListener('click', () => {
+        const checkboxes = document.querySelectorAll('.file-checkbox:checked');
+        let i = 0;
+
+        function downloadNext() {
+            if (i >= checkboxes.length) return;
+            const checkbox = checkboxes[i];
+            i++;
+
+            if (checkbox.dataset.isDir === 'true') {
+                downloadNext(); // Skip folders
+                return;
+            }
+
+            const path = checkbox.dataset.path;
+            const a = document.createElement('a');
+            a.href = `/download/${path}`;
+            a.download = path.split('/').pop();
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            
+            setTimeout(downloadNext, 300);
+        }
+        downloadNext();
+    });
+
+    async function initializeApp() {
+        showLoading('Connecting...');
+        try {
+            const response = await fetch('/api/info');
+            const data = await response.json();
+            state.rootFolderName = data.root_folder_name;
+        } catch (e) {
+            console.error("Could not fetch root folder name.", e);
+        }
+        await navigateTo('');
+        hideLoading();
+    }
+
+    // Initial load
+    document.addEventListener('DOMContentLoaded', initializeApp);
+</script>
+</body>
+</html>
+
