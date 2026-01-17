@@ -2,7 +2,7 @@
 # QuickDrop for Termux (v16 - with Defaults)
 #
 # This version is specifically for non-GUI environments like Termux.
-# It now defaults to sharing the standard ~/storage/downloads folder,
+# It now defaults to sharing the entire Internal Storage (~/storage/shared),
 # making the --dir argument optional for the most common use case.
 # ==============================================================================
 
@@ -131,18 +131,18 @@ def start_server(directory: str):
     app.run(host='0.0.0.0', port=PORT, debug=False)
 
 if __name__ == '__main__':
-    # Define the default path to the standard Termux downloads folder
-    default_downloads_path = '~/storage/downloads'
+    # CHANGED: Now defaults to internal storage root
+    # Note: '~/storage/shared' maps to Internal Storage (/sdcard)
+    default_path = '~/storage/shared'
     
     parser = argparse.ArgumentParser(description="QuickDrop for Termux: Share a folder from your phone.")
     
     # Make the --dir argument optional and set its default value
     parser.add_argument(
         "--dir", 
-        default=default_downloads_path,
-        help=f"The full path to the directory to share. Defaults to your downloads folder: {default_downloads_path}"
+        default=default_path,
+        help=f"The full path to the directory to share. Defaults to Internal Storage: {default_path}"
     )
     args = parser.parse_args()
     
     start_server(args.dir)
-
